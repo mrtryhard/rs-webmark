@@ -66,6 +66,7 @@ fn md_to_html(file: &Path) -> Result<String, String> {
     }
 }
 
+// Create the folders path (equivalent to mkdir -p <path>)
 fn create_output_file_path(opt: &Opt, file: &Path) -> Result<(), Box<dyn std::error::Error + 'static>> {
     let mut p = file.to_path_buf();
     p.pop();
@@ -81,28 +82,6 @@ fn get_dest_file_path(opt: &Opt, file: &PathBuf) -> Result<PathBuf, Box<dyn std:
     file_stripped.pop();
 
     Ok(opt.output.join(file_stripped).join(filename))
-}
-
-#[cfg(test)]
-mod tests_listing {
-    use std::env;
-    use std::path::Path;
-    use crate::list_markdown_files;
-
-    #[test]
-    fn list_files_recursively() {
-        let directory_path = env::var("TEST_DIRECTORY_PATH").unwrap_or("".to_owned());
-        let files_list = list_markdown_files(Path::new(&directory_path));
-
-        assert_eq!(files_list.len(), 2);
-    }
-
-    #[test]
-    fn on_nonexistant_dir_empty_list() {
-        let files_list = list_markdown_files(Path::new("/usr/fake/path"));
-
-        assert_eq!(files_list.len(), 0);
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -123,11 +102,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         println!("[warning] No footer.html found.");
     }
 
-    let header_content = fs::read_to_string(header_path).unwrap_or("".to_owned());
-    let footer_content = fs::read_to_string(footer_path).unwrap_or("".to_owned());
+    let header_content = fs::read_to_string(header_path).unwrap_or("<html><head><title></title><body>".to_owned());
+    let footer_content = fs::read_to_string(footer_path).unwrap_or("</body></html>".to_owned());
 
     for file in files {
-        // Create the folders path (equivalent to mkdir -p <path>)
         create_output_file_path(&opt, &file)?;
 
         let html_content = md_to_html(&file)?;
@@ -141,4 +119,63 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::path::{Path, PathBuf};
+    use crate::list_markdown_files;
+    use crate::{Opt, get_dest_file_path};
+
+    #[test]
+    fn get_dest_file_path_works_with_absolute_path() {
+        let file = Path::new("/test/full/qualified/path/my/file.md");
+        let mut opt = Opt {
+            input: PathBuf::new(),
+            output: PathBuf::new()
+        };
+
+        opt.output.push("/test/full/qualified/path/out");
+        opt.input.push("/test/full/qualified/path/");
+
+        let result = get_dest_file_path(&opt, &file.to_path_buf()).unwrap();
+
+        println!("{}", result.to_str().unwrap());
+
+        assert_eq!(result, Path::new("/test/full/qualified/path/out/my/file.html").to_path_buf());
+    }
+
+    #[test]
+    fn get_dest_file_path_works_with_different_output_path() {
+        let file = Path::new("/test/full/qualified/path/my/file.md");
+        let mut opt = Opt {
+            input: PathBuf::new(),
+            output: PathBuf::new()
+        };
+
+        opt.output.push("/out");
+        opt.input.push("/test/full/qualified/path/");
+
+        let result = get_dest_file_path(&opt, &file.to_path_buf()).unwrap();
+
+        println!("{}", result.to_str().unwrap());
+
+        assert_eq!(result, Path::new("/out/my/file.html").to_path_buf());
+    }
+
+    #[test]
+    fn list_files_recursively() {
+        let directory_path = env::var("TEST_DIRECTORY_PATH").unwrap_or("".to_owned());
+        let files_list = list_markdown_files(Path::new(&directory_path));
+
+        assert_eq!(files_list.len(), 2);
+    }
+
+    #[test]
+    fn on_nonexistant_dir_empty_list() {
+        let files_list = list_markdown_files(Path::new("/usr/fake/path"));
+
+        assert_eq!(files_list.len(), 0);
+    }
 }
