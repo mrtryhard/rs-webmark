@@ -1,10 +1,24 @@
-use std::path::Path;
+use std::path::{PathBuf, Path};
 use std::{fs, vec::Vec};
 
 use comrak::{markdown_to_html, ComrakOptions};
 
-fn list_markdown_files(path: &Path) -> Vec<String> {
-    let mut files = Vec::<String>::new();
+use structopt::StructOpt;
+
+#[derive(Debug, StructOpt)]
+#[structopt(name = "rs-webmark", about = "A markdown-to-html website.")]
+struct Opt {
+    /// Input file
+    #[structopt(parse(from_os_str), long = "input-directory", default_value = ".")]
+    input: PathBuf,
+
+    /// Output directory
+    #[structopt(parse(from_os_str), long = "output-directory", default_value = "./out")]
+    output: PathBuf,
+}
+
+fn list_markdown_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::<PathBuf>::new();
     let dir_entries = fs::read_dir(path);
 
     match dir_entries {
@@ -22,7 +36,7 @@ fn list_markdown_files(path: &Path) -> Vec<String> {
                             match extension_wrapped {
                                 Some(extension) => {
                                     if extension == "md" {
-                                        files.push(entry.path().to_str().expect("Couldn't use file path.").to_owned());
+                                        files.push(entry.path());
                                     }
                                 },
                                 None => {}
@@ -43,13 +57,30 @@ fn list_markdown_files(path: &Path) -> Vec<String> {
     files
 }
 
-fn md_to_html(file: String) -> Result<String, String> {
+fn md_to_html(file: &Path) -> Result<String, String> {
     let content = fs::read_to_string(file);
 
     match content {
         Ok(content) => Ok(markdown_to_html(&content, &ComrakOptions::default())),
         Err(err) => Err(err.to_string())
     }
+}
+
+fn create_output_file_path(opt: &Opt, file: &Path) -> Result<(), Box<dyn std::error::Error + 'static>> {
+    let mut p = file.to_path_buf();
+    p.pop();
+    let s = format!("{}/{}", opt.output.to_str().unwrap(), p.to_str().unwrap());
+    fs::create_dir_all(&s)?;
+
+    Ok(())
+}
+
+fn get_dest_file_path(opt: &Opt, file: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut file_stripped = file.strip_prefix(&opt.input).unwrap().to_owned();
+    let filename = format!("{}.html", file_stripped.file_stem().unwrap().to_str().unwrap());
+    file_stripped.pop();
+
+    Ok(opt.output.join(file_stripped).join(filename))
 }
 
 #[cfg(test)]
@@ -75,43 +106,39 @@ mod tests_listing {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let files = list_markdown_files(Path::new(""));
-    let base_directory = "";
-    let header_path = format!("{}/header.html", base_directory);
+    let opt: Opt = Opt::from_args();
+
+    let files = list_markdown_files(Path::new(&opt.input));
+
+    let header_path = format!("{}/header.html", opt.input.to_str().unwrap_or("."));
     let header_path = Path::new(&header_path);
-    let footer_path = format!("{}/footer.html", base_directory);
+    let footer_path = format!("{}/footer.html", opt.input.to_str().unwrap_or("."));
     let footer_path = Path::new(&footer_path);
 
     if !header_path.exists() {
         println!("[warning] No header.html found.");
     }
 
-    if footer_path.exists() {
+    if !footer_path.exists() {
         println!("[warning] No footer.html found.");
     }
 
-    let header_content = fs::read_to_string(header_path)?;
-    let footer_content = fs::read_to_string(footer_path)?;
-
-    // TODO:
-    // 1. Get working directory from args program -d <input_directory> -o <output_directory>
-    // 2. Get relative paths from input_directory. e.g.: /this/is/folder/[get/this/part/only]
-    //    to be able to construct same relative paths in output.
-    // 3. Convert content to new content and save file. (md_to_html should do it)
-    //
+    let header_content = fs::read_to_string(header_path).unwrap_or("".to_owned());
+    let footer_content = fs::read_to_string(footer_path).unwrap_or("".to_owned());
 
     for file in files {
+        // Create the folders path (equivalent to mkdir -p <path>)
+        create_output_file_path(&opt, &file)?;
 
-        let html_content = md_to_html(file)?;
-        let assembled = format!("{}{}{}", header_content, html_content, footer_content);
+        let html_content = md_to_html(&file)?;
+        let assembled_content = format!("{}{}{}", header_content, html_content, footer_content);
 
-        if fs::write(Path::new(base_directory), assembled).is_err() {
-            println!("Couldn't not write to file.");
+        let dest_path = get_dest_file_path(&opt, &file)?;
+
+        if fs::write(Path::new(&dest_path), assembled_content).is_err() {
+            println!("[error] Couldn't not write to file: {}", dest_path.to_str().unwrap());
         }
-
-        // Minification of HTML?
     }
 
     Ok(())
 }
-
