@@ -1,7 +1,8 @@
 use std::path::{PathBuf, Path};
 use std::{fs, vec::Vec};
 
-use comrak::{markdown_to_html, ComrakOptions};
+use comrak::{ComrakOptions, Arena};
+use comrak::nodes::{NodeValue};
 
 use structopt::StructOpt;
 
@@ -15,6 +16,11 @@ struct Opt {
     /// Output directory
     #[structopt(parse(from_os_str), long = "output-directory", default_value = "./out")]
     output: PathBuf,
+}
+
+struct FileData {
+    html_content: String,
+    title: String
 }
 
 fn list_markdown_files(path: &Path) -> Vec<PathBuf> {
@@ -57,13 +63,50 @@ fn list_markdown_files(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn md_to_html(file: &Path) -> Result<String, String> {
-    let content = fs::read_to_string(file);
+fn md_to_file_info(file: &Path) -> Result<FileData, String> {
+    let arena = Arena::new();
+    let file_content = fs::read_to_string(file).unwrap();
 
-    match content {
-        Ok(content) => Ok(markdown_to_html(&content, &ComrakOptions::default())),
-        Err(err) => Err(err.to_string())
+    let ast_root = comrak::parse_document(&arena, file_content.as_str(), &ComrakOptions::default());
+
+    // Page title is the first level 1 heading we find.
+    let page_title_node = ast_root.children().find(|item| {
+        match item.data.borrow().value {
+            NodeValue::Heading(ref n) => n.level == 1,
+            _ => false
+        }
+    });
+
+    let mut page_title = String::new();
+
+    match page_title_node {
+        Some(node) => {
+            match node.first_child() {
+                Some(child) => {
+                    match child.data.borrow().value {
+                        NodeValue::Text(ref utf8_text) => {
+                            page_title = std::str::from_utf8(&utf8_text).unwrap_or("").to_owned();
+                        },
+                        _ => println!("[error] Couldn't extract title from file '{}'.", file.to_str().unwrap())
+                    }
+                },
+                None => println!("[warning] Could not find title (empty?).")
+            }
+        },
+        None => {
+            println!("[warning] Could not find title for file '{}'. Consider After a header level 1: `# My title` at the beginning of your page.", file.to_str().unwrap());
+         }
     }
+
+    let mut output = vec![];
+    if let Err(_) = comrak::format_html(&ast_root, &ComrakOptions::default(), &mut output) {
+        return Err("Could not format html.".to_owned());
+    }
+
+    Ok(FileData {
+        html_content: String::from_utf8(output).unwrap(),
+        title: page_title
+    })
 }
 
 // Create the folders path (equivalent to mkdir -p <path>)
@@ -102,14 +145,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         println!("[warning] No footer.html found.");
     }
 
-    let header_content = fs::read_to_string(header_path).unwrap_or("<html><head><title></title><body>".to_owned());
+    let header_content = fs::read_to_string(header_path).unwrap_or("<html><head><title>{title}</title><body>".to_owned());
     let footer_content = fs::read_to_string(footer_path).unwrap_or("</body></html>".to_owned());
 
     for file in files {
         create_output_file_path(&opt, &file)?;
 
-        let html_content = md_to_html(&file)?;
-        let assembled_content = format!("{}{}{}", header_content, html_content, footer_content);
+        let file_data = md_to_file_info(&file)?;
+
+        let assembled_content = format!("{}{}{}",
+            header_content.replace("{title}", &file_data.title),
+            file_data.html_content, footer_content);
 
         let dest_path = get_dest_file_path(&opt, &file)?;
 
