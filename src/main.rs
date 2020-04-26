@@ -3,7 +3,6 @@ use std::{fs, vec::Vec};
 
 use comrak::{ComrakOptions, Arena};
 use comrak::nodes::{NodeValue};
-
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -63,7 +62,7 @@ fn list_markdown_files(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn md_to_file_info(file: &Path) -> Result<FileData, String> {
+fn md_to_file_data(file: &Path) -> Result<FileData, String> {
     let arena = Arena::new();
     let file_content = fs::read_to_string(file).unwrap();
 
@@ -90,11 +89,11 @@ fn md_to_file_info(file: &Path) -> Result<FileData, String> {
                         _ => println!("[error] Couldn't extract title from file '{}'.", file.to_str().unwrap())
                     }
                 },
-                None => println!("[warning] Could not find title (empty?).")
+                None => println!("[warn] Could not find title (empty?).")
             }
         },
         None => {
-            println!("[warning] Could not find title for file '{}'. Consider After a header level 1: `# My title` at the beginning of your page.", file.to_str().unwrap());
+            println!("[warn] Could not find title for file '{}'. Consider adding a header level 1: `# My title` at the beginning of your page.", file.to_str().unwrap());
          }
     }
 
@@ -110,21 +109,54 @@ fn md_to_file_info(file: &Path) -> Result<FileData, String> {
 }
 
 // Create the folders path (equivalent to mkdir -p <path>)
-fn create_output_file_path(opt: &Opt, file: &Path) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let mut p = file.to_path_buf();
-    p.pop();
-    let s = format!("{}/{}", opt.output.to_str().unwrap(), p.to_str().unwrap());
-    fs::create_dir_all(&s)?;
+// If path has a file (has extension), it will ignore it.
+fn create_output_file_path(file: &Path) -> Result<(), Box<dyn std::error::Error + 'static>> {
+    let mut path = file.to_path_buf();
+    path.pop();
+    fs::create_dir_all(&path)?;
 
     Ok(())
 }
 
-fn get_dest_file_path(opt: &Opt, file: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let mut file_stripped = file.strip_prefix(&opt.input).unwrap().to_owned();
-    let filename = format!("{}.html", file_stripped.file_stem().unwrap().to_str().unwrap());
-    file_stripped.pop();
+// From a given full input path and a destination output directory,
+// obtains the resulting full output path.
+fn get_dest_html_file_path(opt: &Opt, file: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if file.is_absolute() {
+        let mut file_stripped = file
+            .strip_prefix(&opt.input)
+            .unwrap().to_owned();
+        let filename = format!("{}.html", file_stripped.file_stem().unwrap().to_str().unwrap());
+        file_stripped.pop();
 
-    Ok(opt.output.join(file_stripped).join(filename))
+        Ok(opt.output.join(file_stripped).join(filename))
+    } else {
+        let mut file_stripped = file
+            .canonicalize()?
+            .strip_prefix(&opt.input.canonicalize()?)
+            .unwrap().to_owned();
+        let filename = format!("{}.html", file_stripped.file_stem().unwrap().to_str().unwrap());
+        file_stripped.pop();
+
+        Ok(opt.output.join(file_stripped).join(filename))
+    }
+}
+
+fn get_dest_file_path(opt: &Opt, file: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if file.is_absolute() {
+        let file_stripped = file
+            .strip_prefix(&opt.input)
+            .unwrap()
+            .to_path_buf();
+
+        Ok(opt.output.join(file_stripped))
+    } else {
+        let file_stripped = file.canonicalize()?
+        .strip_prefix(&opt.input.canonicalize()?)
+        .unwrap()
+        .to_path_buf();
+
+        Ok(opt.output.join(file_stripped))
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -138,29 +170,61 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let footer_path = Path::new(&footer_path);
 
     if !header_path.exists() {
-        println!("[warning] No header.html found.");
+        println!("[warn] No header.html found.");
     }
 
     if !footer_path.exists() {
-        println!("[warning] No footer.html found.");
+        println!("[warn] No footer.html found.");
     }
 
     let header_content = fs::read_to_string(header_path).unwrap_or("<html><head><title>{title}</title><body>".to_owned());
     let footer_content = fs::read_to_string(footer_path).unwrap_or("</body></html>".to_owned());
 
     for file in files {
-        create_output_file_path(&opt, &file)?;
+        println!("[info] Processing file {}", file.to_str().unwrap());
+        let dest_path = get_dest_html_file_path(&opt, &file)?;
+        let _ = create_output_file_path(&dest_path)?;
 
-        let file_data = md_to_file_info(&file)?;
+        let file_data = md_to_file_data(&file)?;
 
         let assembled_content = format!("{}{}{}",
             header_content.replace("{title}", &file_data.title),
             file_data.html_content, footer_content);
 
-        let dest_path = get_dest_file_path(&opt, &file)?;
-
         if fs::write(Path::new(&dest_path), assembled_content).is_err() {
             println!("[error] Couldn't not write to file: {}", dest_path.to_str().unwrap());
+        }
+    }
+
+    let assets_path = format!("{}/assets.config", opt.input.to_str().unwrap_or("."));
+    let assets_path = Path::new(&assets_path);
+
+    if assets_path.exists() {
+        if assets_path.is_file() {
+            let assets_list: Vec<String> = fs::read_to_string(assets_path)?
+                .split("\n")
+                .map(|line| line.trim().to_owned())
+                .collect();
+
+            println!("[info] Copying {} assets...", assets_list.len());
+
+            for asset in assets_list {
+                let asset_path = Path::new(&asset);
+
+                if asset_path.exists() {
+                    let asset_dest = get_dest_file_path(&opt, &asset_path.to_path_buf())?;
+                    let _ = create_output_file_path(asset_path);
+
+                    match fs::copy(&asset_path, &asset_dest) {
+                        Ok(_) => {},
+                        Err(e) => println!("[error] Couldn't copy file '{}' to '{}'. Error: {}", asset, asset_dest.to_str().unwrap(), e.to_string())
+                    }
+                } else {
+                    println!("[warn] Couldn't find asset '{}'. Skipping.", &asset);
+                }
+            }
+        } else {
+            println!("[warn] A folder named assets.config has been found but is not an asset descriptor file. Skipping.");
         }
     }
 
@@ -169,51 +233,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
-    use std::path::{Path, PathBuf};
-    use crate::list_markdown_files;
-    use crate::{Opt, get_dest_file_path};
-
-    #[test]
-    fn get_dest_file_path_works_with_absolute_path() {
-        let file = Path::new("/test/full/qualified/path/my/file.md");
-        let mut opt = Opt {
-            input: PathBuf::new(),
-            output: PathBuf::new()
-        };
-
-        opt.output.push("/test/full/qualified/path/out");
-        opt.input.push("/test/full/qualified/path/");
-
-        let result = get_dest_file_path(&opt, &file.to_path_buf()).unwrap();
-
-        println!("{}", result.to_str().unwrap());
-
-        assert_eq!(result, Path::new("/test/full/qualified/path/out/my/file.html").to_path_buf());
-    }
-
-    #[test]
-    fn get_dest_file_path_works_with_different_output_path() {
-        let file = Path::new("/test/full/qualified/path/my/file.md");
-        let mut opt = Opt {
-            input: PathBuf::new(),
-            output: PathBuf::new()
-        };
-
-        opt.output.push("/out");
-        opt.input.push("/test/full/qualified/path/");
-
-        let result = get_dest_file_path(&opt, &file.to_path_buf()).unwrap();
-
-        println!("{}", result.to_str().unwrap());
-
-        assert_eq!(result, Path::new("/out/my/file.html").to_path_buf());
-    }
+    use std::path::{Path};
+    use crate::{Opt, list_markdown_files};
 
     #[test]
     fn list_files_recursively() {
-        let directory_path = env::var("TEST_DIRECTORY_PATH").unwrap_or("".to_owned());
-        let files_list = list_markdown_files(Path::new(&directory_path));
+        let files_list = list_markdown_files(Path::new("./src/tests"));
 
         assert_eq!(files_list.len(), 2);
     }
